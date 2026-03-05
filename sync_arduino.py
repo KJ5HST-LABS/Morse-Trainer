@@ -8,9 +8,12 @@ is enabled. This script copies the real files into MorseTrainer/ so Arduino IDE
 works regardless of OS or git symlink support.
 
 Files that are already valid symlinks are skipped (no work needed).
-Files are only overwritten if the source is newer than the destination.
+Files are only overwritten if the source is newer than the destination,
+unless --force is used to overwrite all files unconditionally.
 
-Usage: python sync_arduino.py
+After syncing, a verification pass warns about any remaining broken symlinks.
+
+Usage: python sync_arduino.py [--force]
 """
 
 import os
@@ -41,18 +44,46 @@ SYNC_RULES = [
 ]
 
 
-def needs_copy(src, dst):
-    """Return True if dst is missing or older than src."""
+def is_broken_symlink_text(filepath):
+    """Check if a file is a git-created text file standing in for a symlink.
+
+    On Windows without Developer Mode, git writes a small text file
+    containing the symlink target path (e.g. ../src/buzzer.cpp).
+    """
+    try:
+        size = os.path.getsize(filepath)
+    except OSError:
+        return False
+    if size >= 100:
+        return False
+    try:
+        with open(filepath, "r", errors="ignore") as f:
+            content = f.read().strip()
+    except OSError:
+        return False
+    # Check both forward-slash (git default) and backslash (rare) paths
+    return content.startswith("../") or content.startswith("..\\")
+
+
+def needs_copy(src, dst, force=False):
+    """Return True if dst is missing, older than src, or force is set."""
     if not os.path.exists(dst):
+        return True
+    # Don't copy a file onto itself (e.g. through a directory symlink)
+    try:
+        if os.path.samefile(src, dst):
+            return False
+    except OSError:
+        pass
+    if force:
         return True
     return os.path.getmtime(src) > os.path.getmtime(dst)
 
 
-def sync():
+def sync(force=False):
     copied = 0
     skipped_symlink = 0
     up_to_date = 0
-
     preserved = 0
 
     for src_subdir, dest_dir in SYNC_RULES:
@@ -88,23 +119,17 @@ def sync():
                 skipped_symlink += 1
                 continue
 
-            # On Windows, git may have created a small text file instead of
-            # a symlink. Detect and remove these so they get replaced with
-            # a real copy. A broken symlink text file is typically < 100 bytes
-            # and contains a relative path like "../include/config.h".
-            if os.path.isfile(dst_path) and os.path.getsize(dst_path) < 100:
-                with open(dst_path, "r", errors="ignore") as f:
-                    content = f.read().strip()
-                if content.startswith("../"):
-                    os.remove(dst_path)
-                    print(f"  Replaced broken symlink: MorseTrainer/{os.path.relpath(dst_path, ARDUINO_DIR)}")
+            # Detect and remove broken symlink text files
+            if os.path.isfile(dst_path) and is_broken_symlink_text(dst_path):
+                os.remove(dst_path)
+                print(f"  Replaced broken symlink: MorseTrainer/{os.path.relpath(dst_path, ARDUINO_DIR)}")
 
             # Preserve user-edited files (e.g. config.h with board selection)
             if filename in preserve_files and os.path.exists(dst_path):
                 preserved += 1
                 continue
 
-            if needs_copy(src_path, dst_path):
+            if needs_copy(src_path, dst_path, force):
                 shutil.copy2(src_path, dst_path)
                 print(f"  Copied: {src_subdir}/{filename} -> MorseTrainer/{os.path.relpath(dst_path, ARDUINO_DIR)}")
                 copied += 1
@@ -114,15 +139,37 @@ def sync():
     return copied, skipped_symlink, up_to_date, preserved
 
 
+def verify():
+    """Scan MorseTrainer/ for any remaining broken symlink text files."""
+    problems = []
+    for entry in sorted(os.listdir(ARDUINO_DIR)):
+        path = os.path.join(ARDUINO_DIR, entry)
+        if os.path.isfile(path) and entry != "MorseTrainer.ino":
+            if is_broken_symlink_text(path):
+                problems.append(entry)
+    # Also check data/ subdirectory
+    data_dir = os.path.join(ARDUINO_DIR, "data")
+    if os.path.isdir(data_dir):
+        for entry in sorted(os.listdir(data_dir)):
+            path = os.path.join(data_dir, entry)
+            if os.path.isfile(path) and is_broken_symlink_text(path):
+                problems.append(f"data/{entry}")
+    return problems
+
+
 def main():
+    force = "--force" in sys.argv
+
     print("Syncing Arduino IDE files (MorseTrainer/)...")
+    if force:
+        print("  (--force: overwriting all files)")
     print()
 
     if not os.path.isdir(ARDUINO_DIR):
         print(f"ERROR: MorseTrainer/ directory not found at {ARDUINO_DIR}")
         sys.exit(1)
 
-    copied, skipped_symlink, up_to_date, preserved = sync()
+    copied, skipped_symlink, up_to_date, preserved = sync(force)
 
     print()
     if copied == 0 and skipped_symlink > 0:
@@ -134,6 +181,16 @@ def main():
 
     if preserved > 0:
         print(f"  ({preserved} user-edited file(s) preserved — delete to re-sync from source)")
+
+    # Verify no broken symlinks remain
+    problems = verify()
+    if problems:
+        print()
+        print("WARNING: The following files still look like broken symlinks:")
+        for p in problems:
+            print(f"  MorseTrainer/{p}")
+        print("Try running: python sync_arduino.py --force")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
