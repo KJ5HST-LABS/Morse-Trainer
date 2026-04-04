@@ -110,6 +110,14 @@ pio device monitor               # Serial monitor (115200 baud)
 python3 sync_arduino.py          # Sync src/ -> MorseTrainer/MorseTrainer.ino
 ```
 
+## Backlog & Issues
+
+Use **GitHub Issues** for backlog items, bugs, and cross-project coordination. Do not use BACKLOG.md — it has been migrated to GitHub Issues.
+
+- View issues: `gh issue list`
+- Create issue: `gh issue create --title "..." --body "..."`
+- Cross-project issues: use the target repo's issue tracker
+
 ## Conventions
 
 - All hardware modules use namespace pattern (e.g., `MorseEngine::begin()`, `Buzzer::setActive()`)
